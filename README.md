@@ -198,3 +198,7 @@ provider never saw the request.
 
 - Accounts, watch list, preferences: `defaults delete com.local.roost`
 - Tokens: `security delete-generic-password -s roost` (once per account)
+
+## License
+
+MIT - see [LICENSE](LICENSE).
