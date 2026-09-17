@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Roost</string>
+    <key>CFBundleDisplayName</key>
+    <string>Roost</string>
+    <key>CFBundleExecutable</key>
+    <string>Roost</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.roost</string>
+    <key>CFBundleIconFile</key>
+    <string>Roost</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <!-- Menu bar agent: no Dock icon, no app menu. -->
+    <key>LSUIElement</key>
+    <true/>
+    <!-- Talks to github.com / gitlab.com and any self-hosted instance the user
+         adds. Self-hosted GitLab/GHE installs behind a corporate proxy sometimes
+         terminate TLS with an internal CA, but that is the system trust store's
+         job, not ours: no ATS exceptions are declared here on purpose. -->
+</dict>
+</plist>
