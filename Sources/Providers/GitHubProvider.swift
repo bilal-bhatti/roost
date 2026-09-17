@@ -133,15 +133,13 @@ struct GitHubProvider: Provider {
             // entry in `errors` pointing at that alias. Map alias -> message so
             // each missing repo gets its own explanation.
             var aliasErrors: [String: String] = [:]
-            // Aliases whose check-run rollup specifically was refused. GraphQL
-            // nulls only the nearest nullable field, so the repository itself
-            // survives and the PR count is still good — it is just the CI state
-            // that has to come from somewhere else.
-            var rollupDenied: Set<String> = []
             for error in response.errors {
                 guard let path = error.path, let alias = path.first else { continue }
-                if path.contains("statusCheckRollup") {
-                    rollupDenied.insert(alias)
+                // Anything under a repository alias that isn't the repository
+                // itself is a partial refusal: the PR count still arrived, so
+                // don't blank the row over it.
+                if path.count > 1 {
+                    Log.network.notice("GraphQL partial refusal at \(path.joined(separator: "."), privacy: .public): \(error.message, privacy: .public)")
                 } else {
                     aliasErrors[alias] = error.message
                 }
@@ -155,21 +153,25 @@ struct GitHubProvider: Provider {
                     )
                     continue
                 }
-                var highlights = RepoHighlights(
+                let rollupState = node.defaultBranchRef?.target?.statusCheckRollup?.state
+                let highlights = RepoHighlights(
                     openChangeRequests: node.pullRequests.totalCount,
                     reviewRequests: reviewCounts?[node.nameWithOwner.lowercased()] ?? 0,
                     reviewRequestsAvailable: reviewCounts != nil,
-                    ci: Self.ciStatus(from: node),
+                    ci: rollupState.map(Self.mapRollup) ?? .unknown,
                     defaultBranch: node.defaultBranchRef?.name,
                     url: node.url
                 )
-                // Queue the REST fallback rather than letting a refused rollup
-                // read as "No checks" — the failure mode this whole app exists
-                // to avoid.
-                if rollupDenied.contains(alias), let branch = node.defaultBranchRef?.name {
-                    highlights.ci = .unknown
+                // Any missing rollup queues the fallback, not just an explicitly
+                // refused one. GitHub returns null here with no error at all
+                // when the token can't reach checks, so waiting for an error
+                // meant the fallback never ran and every repo reported "No
+                // checks" — a confident answer nobody had actually asked for.
+                // The branch may be nil too (`defaultBranchRef` is refused
+                // without Contents: Read), so the fallback resolves it.
+                if rollupState == nil {
                     ciFallback.append(CIFallback(fullName: repo.fullName, owner: repo.owner,
-                                                 name: repo.name, branch: branch))
+                                                 name: repo.name, branch: node.defaultBranchRef?.name))
                 }
                 out[repo.fullName] = highlights
             }
@@ -181,21 +183,72 @@ struct GitHubProvider: Provider {
         // reports through the older commit-status API is not visible this way,
         // which is why classic tokens keep using the rollup.
         if !ciFallback.isEmpty {
-            Log.network.notice("Check rollup refused for \(ciFallback.count, privacy: .public) repos; falling back to the Actions API")
-            let statuses = await ProviderSupport.mapConcurrently(ciFallback) { await actionsStatus($0) }
-            for (entry, status) in zip(ciFallback, statuses) {
-                out[entry.fullName]?.ci = status
+            Log.network.notice("No check rollup for \(ciFallback.count, privacy: .public) repos; resolving CI over REST")
+            let results = await ProviderSupport.mapConcurrently(ciFallback) { await fallbackCIStatus($0) }
+            for (entry, result) in zip(ciFallback, results) {
+                out[entry.fullName]?.ci = result.status
+                if out[entry.fullName]?.defaultBranch == nil {
+                    out[entry.fullName]?.defaultBranch = result.branch
+                }
             }
         }
         return out
     }
 
+    /// CI state for a branch without the Checks API.
+    ///
+    /// GitHub will not grant fine-grained tokens a `Checks` permission, so the
+    /// check-run rollup is unreachable for them. Two of the three things that
+    /// rollup folds together are still reachable separately:
+    ///
+    ///  * GitHub Actions runs, via `Actions: Read`.
+    ///  * Legacy commit statuses, via `Commit statuses: Read`. This is how CI
+    ///    that predates the Checks API reports, and a repo using it has no
+    ///    workflow runs at all.
+    ///
+    /// Actions is tried first because it answers the common case; the status
+    /// API is only consulted when there are no runs, so the usual path stays at
+    /// one request. What remains genuinely invisible is third-party CI that
+    /// reports as *check runs* through a GitHub App integration — that needs
+    /// the Checks API, and no PAT can read it.
+    private func fallbackCIStatus(_ entry: CIFallback) async -> CIResult {
+        // GraphQL may not have given us a branch either — `defaultBranchRef` is
+        // refused without Contents: Read, and silently. REST metadata always
+        // carries it and needs only Metadata: Read.
+        // Written out rather than `entry.branch ?? await …`: the right-hand
+        // side of `??` is an autoclosure, which can't be async.
+        var resolved = entry.branch
+        if resolved == nil { resolved = await defaultBranch(entry) }
+        guard let branch = resolved else {
+            return CIResult(status: .unknown, branch: nil)
+        }
+        let fromActions = await actionsStatus(entry, branch: branch)
+        guard fromActions == .none else { return CIResult(status: fromActions, branch: branch) }
+        return CIResult(status: await commitStatus(entry, branch: branch), branch: branch)
+    }
+
+    /// Default branch from REST metadata, for when GraphQL wouldn't say.
+    private func defaultBranch(_ entry: CIFallback) async -> String? {
+        do {
+            let request = try makeRESTRequest("/repos/\(entry.owner)/\(entry.name)")
+            let detail: RESTRepoDetail = try await http
+                .send(request, cacheKey: cacheKey(request))
+                .decode(RESTRepoDetail.self)
+            return detail.default_branch
+        } catch {
+            if !Log.isCancellation(error) {
+                Log.network.error("Default branch lookup failed for \(entry.fullName, privacy: .public): \(Log.describe(error), privacy: .public)")
+            }
+            return nil
+        }
+    }
+
     /// Latest workflow run on a branch, as a CI state. Needs only
     /// `Actions: Read`, which fine-grained tokens *can* be given.
-    private func actionsStatus(_ entry: CIFallback) async -> CIStatus {
+    private func actionsStatus(_ entry: CIFallback, branch: String) async -> CIStatus {
         do {
             let request = try makeRESTRequest("/repos/\(entry.owner)/\(entry.name)/actions/runs", query: [
-                .init(name: "branch", value: entry.branch),
+                .init(name: "branch", value: branch),
                 .init(name: "per_page", value: "1"),
                 // Runs triggered by pull requests say nothing about whether the
                 // branch itself is green.
@@ -211,6 +264,37 @@ struct GitHubProvider: Provider {
                 Log.network.error("Actions status failed for \(entry.fullName, privacy: .public): \(Log.describe(error), privacy: .public)")
             }
             return .unknown
+        }
+    }
+
+    /// Combined legacy commit status for a branch. Needs `Commit statuses:
+    /// Read`, which fine-grained tokens can be given.
+    private func commitStatus(_ entry: CIFallback, branch: String) async -> CIStatus {
+        do {
+            let ref = ProviderSupport.encodeSegment(branch)
+            let request = try makeRESTRequest("/repos/\(entry.owner)/\(entry.name)/commits/\(ref)/status")
+            let payload: CombinedStatus = try await http
+                .send(request, cacheKey: cacheKey(request))
+                .decode(CombinedStatus.self)
+            return Self.mapCombinedStatus(state: payload.state, count: payload.total_count ?? 0)
+        } catch {
+            if !Log.isCancellation(error) {
+                Log.network.error("Commit status failed for \(entry.fullName, privacy: .public): \(Log.describe(error), privacy: .public)")
+            }
+            return .unknown
+        }
+    }
+
+    /// The count is load-bearing, not the state. A commit with no statuses at
+    /// all comes back as `state: "pending", total_count: 0` — reading the state
+    /// alone would report "nothing ran" as "still running" forever.
+    private static func mapCombinedStatus(state: String?, count: Int) -> CIStatus {
+        guard count > 0 else { return .none }
+        switch state?.lowercased() {
+        case "success":        return .passing
+        case "failure", "error": return .failing
+        case "pending":        return .running
+        default:               return .unknown
         }
     }
 
@@ -260,10 +344,11 @@ struct GitHubProvider: Provider {
         return counts
     }
 
-    private static func ciStatus(from node: RepoNode) -> CIStatus {
-        // No default branch at all means an empty repo, not a broken build.
-        guard let branch = node.defaultBranchRef else { return .none }
-        guard let state = branch.target?.statusCheckRollup?.state else { return .none }
+    /// Maps a rollup state that actually arrived. A *missing* rollup is never
+    /// routed here: it goes to the REST fallback instead, because "GitHub told
+    /// me nothing" and "there is no CI" are different facts and only one of
+    /// them is safe to show.
+    private static func mapRollup(_ state: String) -> CIStatus {
         switch state.uppercased() {
         case "SUCCESS":            return .passing
         case "FAILURE", "ERROR":   return .failing
@@ -433,7 +518,21 @@ private struct CIFallback: Sendable {
     let fullName: String
     let owner: String
     let name: String
-    let branch: String
+    /// nil when GraphQL wouldn't name the default branch; resolved over REST.
+    let branch: String?
+}
+
+/// Result of the REST route: the state, plus whatever branch it was read from
+/// so the row can show it even when GraphQL withheld the name.
+private struct CIResult: Sendable {
+    let status: CIStatus
+    let branch: String?
+}
+
+/// `GET /repos/{owner}/{repo}` — used only for the default branch, which needs
+/// nothing beyond Metadata: Read.
+private struct RESTRepoDetail: Decodable {
+    var default_branch: String?
 }
 
 /// `GET /repos/{owner}/{repo}/actions/runs`. Both fields are optional: the
@@ -445,6 +544,13 @@ private struct WorkflowRuns: Decodable {
         var status: String?
         var conclusion: String?
     }
+}
+
+/// `GET /repos/{owner}/{repo}/commits/{ref}/status`. `total_count` is kept
+/// because `state` alone cannot distinguish "no statuses" from "pending".
+private struct CombinedStatus: Decodable {
+    var state: String?
+    var total_count: Int?
 }
 
 /// A repository from `GET /user/repos`. Only the fields the picker shows —

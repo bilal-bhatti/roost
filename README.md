@@ -62,7 +62,7 @@ another tool, so its access can be revoked on its own.
 
 | Provider | What the link opens | Permissions | Read-only? |
 |---|---|---|---|
-| GitHub | Fine-grained token form | Metadata, Pull requests, Commit statuses, Actions - all Read-only | Yes |
+| GitHub | Fine-grained token form | Metadata, Contents, Pull requests, Commit statuses, Actions - all Read-only | Yes |
 | GitLab | Access token form | `read_api` | Yes |
 
 Both links are prefilled. GitLab takes `name` and `scopes`; GitHub takes its
@@ -100,10 +100,30 @@ Two things to know about fine-grained tokens:
 - **GitHub does not offer fine-grained tokens a `Checks` permission at all** -
   it is GitHub App only. That breaks GraphQL's `statusCheckRollup`, which folds
   check runs and commit statuses into one value and refuses the whole field
-  without it. So when the rollup comes back denied, Roost falls back to
-  `GET /repos/{o}/{r}/actions/runs` for the default branch, which needs only
-  `Actions: Read`. Classic tokens keep using the rollup, which also sees CI that
-  reports through the older commit-status API.
+  without it.
+
+  `Contents: Read` is in the list for a related reason, and not for file
+  contents: GraphQL refuses `defaultBranchRef` without it, and refuses it
+  *silently* - null, no error. Roost no longer trusts a missing rollup either
+  way, and re-reads the default branch from REST metadata when GraphQL won't
+  name it, so a token without Contents still gets a CI state.
+
+  When the rollup is missing, Roost reconstructs the state from the two
+  APIs a fine-grained token *can* reach: `GET /repos/{o}/{r}/actions/runs`
+  (`Actions: Read`), and if a repo has no workflow runs,
+  `GET /repos/{o}/{r}/commits/{ref}/status` (`Commit statuses: Read`). Actions
+  is tried first, so the common case is still one request.
+
+  | CI reports as | Classic | Fine-grained |
+  |---|---|---|
+  | GitHub Actions | yes | yes, via Actions API |
+  | Commit statuses (older third-party CI) | yes | yes, via Statuses API |
+  | Check runs from a GitHub App (CircleCI, Buildkite, …) | yes | **no** |
+
+  That last row is the real loss, and no PAT of any kind can close it - reading
+  check runs requires a GitHub App installation token. If you depend on one of
+  those integrations, use a classic token for that account and accept the write
+  scope, or watch the repo through a GitHub App instead.
 
 **Classic…** (GitHub only) opens the legacy classic-token form instead, with
 `repo` and `read:org` pre-ticked. One classic token reaches every owner you can

@@ -86,7 +86,12 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
     var fineGrainedPermissions: [String]? {
         switch self {
         case .github:
+            // Contents is here for `defaultBranchRef`, not for file contents:
+            // GraphQL refuses that field without it, and refuses it *silently*,
+            // returning null rather than an error. Without the default branch
+            // there is nothing to ask about a branch's CI state.
             return ["Metadata: Read-only",
+                    "Contents: Read-only",
                     "Pull requests: Read-only",
                     "Commit statuses: Read-only",
                     "Actions: Read-only"]
@@ -140,6 +145,7 @@ enum ProviderKind: String, Codable, CaseIterable, Identifiable, Sendable {
                 // year is long enough that renewing it is a non-event.
                 .init(name: "expires_in", value: "365"),
                 .init(name: "metadata", value: "read"),
+                .init(name: "contents", value: "read"),
                 .init(name: "pull_requests", value: "read"),
                 .init(name: "statuses", value: "read"),
                 .init(name: "actions", value: "read"),
