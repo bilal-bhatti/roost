@@ -51,14 +51,21 @@ building.
 
 First launch opens **Settings** (also reachable from the menu bar icon, or ⌘,):
 
-**Accounts** - add one per identity. Pick the provider, set the host, then get a
-token. The token is stored in your login Keychain, never on disk. **Verify**
-confirms it and resolves your login.
+**Accounts** - one per identity, listed down the left. The form beside it runs in
+three numbered steps: where the account points (provider, host, and on GitHub the
+resource owner), creating a token, then pasting it back. **Save & Verify**
+confirms the token and resolves your login.
+
+The token is stored in your login Keychain, never on disk. Once saved it is shown
+as a fingerprint - `github_pat_••••4f9c`, plus its length - rather than as 93
+secure-field bullets. **Replace…** swaps it, **Remove** forgets it.
 
 Roost only ever reads. It gets its own token rather than borrowing one from
 another tool, so its access can be revoked on its own.
 
-**Create Token…** opens the token form the provider recommends.
+**Create Token on <provider>…** opens the token form. On GitHub the **Token
+type** choice above it decides which form that is - fine-grained (recommended) or
+classic; GitLab issues one kind of token, so it offers no choice.
 
 | Provider | What the link opens | Permissions | Read-only? |
 |---|---|---|---|
@@ -125,11 +132,11 @@ Two things to know about fine-grained tokens:
   those integrations, use a classic token for that account and accept the write
   scope, or watch the repo through a GitHub App instead.
 
-**Classic…** (GitHub only) opens the legacy classic-token form instead, with
-`repo` and `read:org` pre-ticked. One classic token reaches every owner you can
-see, which a fine-grained token cannot - but `repo` has no read-only form, so it
-grants write access too. `read:org` only affects whether organisation-owned
-repos appear in the picker.
+**Token type: Classic (legacy)** (GitHub only) points the same button at the
+legacy classic-token form, with `repo` and `read:org` pre-ticked. One classic
+token reaches every owner you can see, which a fine-grained token cannot - but
+`repo` has no read-only form, so it grants write access too. `read:org` only
+affects whether organisation-owned repos appear in the picker.
 
 If a token can't run the cross-owner review search, Roost says "Review count
 unavailable" rather than reporting a confident zero.
@@ -138,7 +145,14 @@ For GitHub Enterprise or self-hosted GitLab, change the **Host** field - that is
 the only difference. The API base URL follows from it.
 
 **Repositories** - pick what to watch. The list is everything the token can see,
-fetched once per launch; filter it and tick what you want.
+fetched once per launch, split into **Watching** and **Available**: ticking a row
+moves it between the two, and clicking anywhere on the row does it. **Filters**
+(bottom right) scopes the listing to the account's resource owner and shows or
+hides archived repos. A repo you watch that the token can no longer see stays in
+Watching, marked with a `?`, so it can always be unticked.
+
+The settings window is resizable and remembers its size, which is the difference
+between a 200-repository list and a scroll marathon.
 
 **General** - how often to poll (1 minute to 1 hour), whether to show the pending
 review count in the menu bar, and open-at-login.

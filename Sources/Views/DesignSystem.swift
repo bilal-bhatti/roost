@@ -22,11 +22,24 @@ enum Metrics {
     /// The list scrolls past this; the popover never grows to fill the screen.
     static let listMaxHeight: CGFloat = 360
 
-    /// Settings windows on macOS don't resize, so the panes are laid out for
-    /// exactly this. Shared with AppState, which sizes the NSWindow to match —
-    /// if the two drifted apart the window would open at the wrong size and
-    /// then jump once SwiftUI measured its content.
-    static let settingsSize = CGSize(width: 560, height: 440)
+    /// Size the settings window opens at the first time. Shared with AppState,
+    /// which sizes the NSWindow to match — if the two drifted apart the window
+    /// would open at the wrong size and then jump once SwiftUI measured it.
+    ///
+    /// The classic macOS settings window is fixed-size, and Roost's was too. It
+    /// is resizable now because two of the three panes hold lists that are as
+    /// long as the user's account is: a 200-repository picker through a 440pt
+    /// porthole is a scroll marathon, and no fixed height is right for both that
+    /// and the three rows on General.
+    static let settingsSize = CGSize(width: 760, height: 580)
+
+    /// Floor for the resizable settings window: below this the accounts sidebar
+    /// and its detail pane start fighting over the same points.
+    static let settingsMinSize = CGSize(width: 640, height: 480)
+
+    /// Width of the account sidebar. Wide enough for "Personal · bilal" without
+    /// truncating, narrow enough to leave the form the bulk of the window.
+    static let sidebarWidth: CGFloat = 210
 
     static let contentInset: CGFloat = 12
     static let rowInset: CGFloat = 6

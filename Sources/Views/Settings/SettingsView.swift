@@ -24,6 +24,17 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(AppState.SettingsTab.general)
         }
-        .frame(width: Metrics.settingsSize.width, height: Metrics.settingsSize.height)
+        // A floor and an ideal, not a fixed size: the window is resizable, so the
+        // content has to be willing to grow with it. A hard frame here would pin
+        // the SwiftUI content at one size inside a window the user had just
+        // dragged bigger, leaving a band of empty background around it.
+        .frame(
+            minWidth: Metrics.settingsMinSize.width,
+            idealWidth: Metrics.settingsSize.width,
+            maxWidth: .infinity,
+            minHeight: Metrics.settingsMinSize.height,
+            idealHeight: Metrics.settingsSize.height,
+            maxHeight: .infinity
+        )
     }
 }
