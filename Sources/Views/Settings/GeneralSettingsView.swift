@@ -40,7 +40,11 @@ struct GeneralSettingsView: View {
                     Text(Formatting.lastUpdated(state.lastRefresh))
                 }
                 LabeledContent("Version") {
-                    Text(Self.version)
+                    Text(Self.sourceVersion)
+                        .font(.system(.body, design: .monospaced))
+                        // The one string anyone will be asked to quote in a bug
+                        // report, so it is copyable rather than retypeable.
+                        .textSelection(.enabled)
                 }
             } header: {
                 Text("Status")
@@ -49,10 +53,12 @@ struct GeneralSettingsView: View {
         .formStyle(.grouped)
     }
 
-    private static var version: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = info?["CFBundleVersion"] as? String ?? "1"
-        return "\(short) (\(build))"
+    /// The commit this build came from, stamped into the bundle's Info.plist by
+    /// build-app.sh. Roost has no release cadence and no App Store listing, so a
+    /// marketing version would be a number nobody bumps and everybody misreads;
+    /// the SHA says exactly which source built this binary. A `-dirty` suffix
+    /// means the tree had uncommitted changes at build time.
+    private static var sourceVersion: String {
+        Bundle.main.infoDictionary?["RoostGitSHA"] as? String ?? "unknown"
     }
 }

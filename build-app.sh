@@ -63,6 +63,19 @@ swiftc \
 # 3) metadata + icon. The .icns is generated (not checked in) — render it on the
 #    first build, and carry on without one if that fails rather than blocking.
 cp "$DIR/Info.plist" "$CONTENTS/Info.plist"
+
+#    Stamp the commit this build came from. A hand-maintained version number in
+#    Info.plist is a number somebody has to remember to bump, and it is wrong the
+#    moment they don't; the SHA is always true and is what a bug report needs.
+#    Written into the *copied* plist, never the checked-in one, and before
+#    signing — any edit after codesign invalidates the signature.
+GIT_SHA="$(git -C "$DIR" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
+if [[ -n "$(git -C "$DIR" status --porcelain 2>/dev/null)" ]]; then
+    # Untracked files count: build-app.sh compiles everything under Sources/,
+    # so an uncommitted new file is in this binary whether git tracks it or not.
+    GIT_SHA="$GIT_SHA-dirty"
+fi
+/usr/libexec/PlistBuddy -c "Add :RoostGitSHA string $GIT_SHA" "$CONTENTS/Info.plist" >/dev/null
 if [[ ! -f "$DIR/icon/$NAME.icns" ]]; then
     "$DIR/icon/build-icon.sh" >/dev/null 2>&1 || echo "  (icon render failed — building without an app icon)"
 fi
