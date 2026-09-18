@@ -108,7 +108,7 @@ struct MenuContentView: View {
             emptyState(
                 title: "No accounts yet",
                 systemImage: "person.crop.circle.badge.plus",
-                message: "Add a GitHub or GitLab account to start watching repositories.",
+                message: "Add a \(ProviderRegistry.names(joinedBy: "or")) account to start watching repositories.",
                 actionTitle: "Add an Account…",
                 tab: .accounts
             )
@@ -190,7 +190,7 @@ struct MenuContentView: View {
                 RepoRow(
                     repo: repo,
                     highlights: state.highlights(for: repo),
-                    lexicon: account.kind.lexicon
+                    lexicon: account.lexicon
                 ) {
                     state.open(repo)
                 }

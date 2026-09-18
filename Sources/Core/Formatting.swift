@@ -37,10 +37,13 @@ enum Formatting {
 
     /// Token prefixes worth keeping visible in a fingerprint. The prefix is the
     /// part that says *which kind* of token this is — the exact thing that gets
-    /// mixed up between GitHub's two forms.
-    private static let tokenPrefixes = [
-        "github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "glpat-",
-    ]
+    /// mixed up on a host that issues two forms.
+    ///
+    /// Read off the credentials themselves rather than listed here. The same
+    /// fact used to be written out in three unrelated files, and nothing broke
+    /// when one of them fell behind; it just quietly stopped recognising a token.
+    private static let tokenPrefixes: [String] =
+        ProviderRegistry.all.flatMap { $0.credentials.flatMap(\.tokenPrefixes) }
 
     /// A stored token, shown the way a credential should be: enough to
     /// recognise which one it is, never enough to use it.

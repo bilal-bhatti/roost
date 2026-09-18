@@ -17,7 +17,7 @@ struct GeneralSettingsView: View {
             } header: {
                 Text("Refreshing")
             } footer: {
-                Text("Roost also refreshes whenever you open the menu. Both GitHub and GitLab meter usage per hour, so a longer interval leaves more headroom for large watch lists.")
+                Text("Roost also refreshes whenever you open the menu. \(ProviderRegistry.names(joinedBy: "and")) meter usage per hour, so a longer interval leaves more headroom for large watch lists.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

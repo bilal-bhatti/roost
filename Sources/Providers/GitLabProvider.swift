@@ -20,10 +20,20 @@ struct GitLabProvider: Provider {
 
     // MARK: - Provider
 
-    func verify() async throws -> String {
+    func verify() async throws -> Verification {
         let request = try makeRequest("/user")
         let user: User = try await http.send(request).decode(User.self)
-        return user.username
+        // A personal access token is bound to the person, so there is nothing
+        // narrower to resolve and nothing about its reach worth warning over.
+        // The credential says so itself rather than this method assuming it, so
+        // a group access token can answer differently when Roost learns them.
+        let scope: TokenScope
+        switch account.traits.binding(forToken: token, account: account) {
+        case .unchanged:              scope = account.scope
+        case .wholeIdentity:          scope = .wholeIdentity
+        case .resourceOwner(let name): scope = .resourceOwner(name: name, kind: .user)
+        }
+        return Verification(login: user.username, scope: scope)
     }
 
     func repositories() async throws -> [RemoteRepo] {

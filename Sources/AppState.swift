@@ -168,76 +168,29 @@ final class AppState: ObservableObject {
         }
         let provider = ProviderFactory.make(account: account, token: token, http: http)
         do {
-            let login = try await provider.verify()
+            // Everything the check learned comes back in one value. What a token
+            // reaches, and whether that is worth warning about, are questions
+            // only the host can answer — so they are answered behind the
+            // provider seam rather than re-derived here from token prefixes.
+            let result = try await provider.verify()
             var updated = account
-            updated.login = login
-            updated.scope = await resolvedScope(for: updated, token: token, using: provider)
+            updated.login = result.login
+            updated.scope = result.scope
             if let index = accounts.firstIndex(where: { $0.id == account.id }) {
                 accounts[index] = updated
                 Store.accounts = accounts
             }
+            // A check that needed a listing already paid for one; keep it rather
+            // than paging the host again when the picker opens.
+            if let repos = result.repositories {
+                repositoryCache[account.id] = repos
+                    .sorted { $0.fullName.localizedStandardCompare($1.fullName) == .orderedAscending }
+            }
             accountErrors[account.id] = nil
-            return .success(VerifyOutcome(login: login, warning: await ownerWarning(for: updated, using: provider)))
+            return .success(VerifyOutcome(login: result.login, warning: result.warning))
         } catch {
             return .failure(error)
         }
-    }
-
-    /// What the just-verified token actually reaches.
-    ///
-    /// The token itself is the evidence, not the form the user filled in: GitHub
-    /// stamps `github_pat_` on fine-grained tokens and `ghp_` on classic ones,
-    /// and only the first kind is bound to a resource owner. A user who pastes a
-    /// classic token into an account that names an owner gets the truth recorded
-    /// rather than the intention, which is what stops the repo picker from
-    /// filtering by an owner the token was never scoped to.
-    private func resolvedScope(for account: Account, token: String, using provider: Provider) async -> TokenScope {
-        guard account.kind == .github else { return account.scope }
-        if token.hasPrefix("ghp_") { return .wholeIdentity }
-
-        // Fine-grained, and no owner named yet: the common case is watching your
-        // own repositories, so the login is the right answer. Filling it in
-        // beats leaving a field mysteriously empty for the user to guess at.
-        let name = account.resourceOwner ?? account.login
-        guard !name.isEmpty else { return account.scope }
-        let kind = await provider.ownerKind(of: name)
-            // Unreachable or refused: fall back to the one thing we can infer.
-            // A resource owner that isn't you is an organisation far more often
-            // than it is a second personal account.
-            ?? (name.caseInsensitiveCompare(account.login) == .orderedSame ? .user : .organisation)
-        return .resourceOwner(name: name, kind: kind)
-    }
-
-    /// Checks that a token scoped to someone else's account can actually reach
-    /// them.
-    ///
-    /// This exists because of a specific, open GitHub bug: the token page's
-    /// `target_name` parameter sets the Resource owner dropdown's *appearance*
-    /// without setting the form, so a token can be created under the personal
-    /// account while looking correct throughout. A fine-grained token's
-    /// resource owner is fixed at creation, so the only cure is deletion —
-    /// which makes catching it at verify time, rather than at the first
-    /// confusing empty repo list, worth a request.
-    private func ownerWarning(for account: Account, using provider: Provider) async -> String? {
-        // `.needed`, not "anything but notNeeded": this runs with a freshly
-        // resolved login in hand, so `.unknown` here would mean the verify call
-        // returned no login at all, and there is nothing to compare against.
-        guard account.resourceOwnerSelection == .needed,
-              let owner = account.resourceOwner
-        else { return nil }
-
-        guard let repos = try? await provider.repositories() else { return nil }
-        repositoryCache[account.id] = repos
-            .sorted { $0.fullName.localizedStandardCompare($1.fullName) == .orderedAscending }
-
-        // Public repos are visible to every token regardless of scope, so only
-        // a private one proves the token really reaches this owner.
-        let reachesOwner = repos.contains {
-            $0.isPrivate && $0.namespace.caseInsensitiveCompare(owner) == .orderedSame
-        }
-        guard !reachesOwner else { return nil }
-
-        return "Signed in as \(account.login), but this token can't see any private repository owned by \(owner). Its resource owner is probably your personal account, and that can't be changed after the token is created: delete it and make a new one with Resource owner set to \(owner) on the page itself."
     }
 
     // MARK: - Repository picking
@@ -333,10 +286,10 @@ final class AppState: ObservableObject {
                 continue
             }
 
-            // Review requests are looked up by login, and GitLab has no "@me"
-            // shorthand for it. If the user pasted a token without pressing
-            // Verify, resolve the login here rather than silently reporting
-            // zero reviews forever.
+            // Review requests are looked up by login, and not every host offers
+            // an "@me" shorthand for it. If the user pasted a token without
+            // pressing Verify, resolve the login here rather than silently
+            // reporting zero reviews forever.
             var account = account
             if account.login.isEmpty {
                 if case .failure(let error) = await verify(account) {

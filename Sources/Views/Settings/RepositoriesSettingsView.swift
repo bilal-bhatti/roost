@@ -48,7 +48,11 @@ struct RepositoriesSettingsView: View {
     /// The selected account's provider vocabulary. GitHub lists repositories
     /// owned by an owner; GitLab lists projects under a namespace, and this pane
     /// says whichever applies rather than splitting the difference.
-    private var lexicon: ProviderLexicon { (account?.kind ?? .github).lexicon }
+    ///
+    /// The neutral fallback is for the moment before an account is selected.
+    /// Defaulting to one provider's nouns there would label this pane
+    /// "repositories" a frame before it fills with projects.
+    private var lexicon: ProviderLexicon { account?.lexicon ?? .neutral }
 
     // MARK: - Toolbar
 
@@ -301,15 +305,10 @@ struct RepositoriesSettingsView: View {
         ownerOnly ? scopeName : nil
     }
 
-    /// Why a watched repo can be absent from the listing. Worth spelling out:
-    /// the single-resource-owner rule is the most common reason a repo someone
-    /// obviously has access to simply isn't there, and nothing in the GitHub UI
-    /// says so at the point you'd notice.
+    /// Why a watched repo can be absent from the listing. The reasons differ by
+    /// host and only the host knows its own, so the sentence comes from there.
     private var missingRepoHint: String {
-        guard account?.kind == .github else {
-            return "Rows marked with a ? are watched, but this token can't see them. They may have been renamed, deleted, or moved out of its reach."
-        }
-        return "Rows marked with a ? are watched, but this token can't see them.\n\nA fine-grained token only reaches private repositories owned by its one resource owner; everything else it sees is public. To watch a private repository under another user or organisation, add a second account with a token whose resource owner is that user or organisation."
+        account?.traits.missingRepoHint ?? ""
     }
 
     private func watchBinding(_ repo: RemoteRepo) -> Binding<Bool> {

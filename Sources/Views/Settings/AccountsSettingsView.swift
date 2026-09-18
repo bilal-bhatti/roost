@@ -75,9 +75,9 @@ struct AccountsSettingsView: View {
                 canRemove: selection != nil,
                 remove: removeSelected
             ) {
-                ForEach(ProviderKind.allCases) { kind in
-                    Button("New \(kind.displayName) Account") {
-                        selection = state.addAccount(kind: kind).id
+                ForEach(ProviderRegistry.all, id: \.kind) { traits in
+                    Button("New \(traits.displayName) Account") {
+                        selection = state.addAccount(kind: traits.kind).id
                     }
                 }
             }
@@ -104,7 +104,7 @@ struct AccountsSettingsView: View {
             ContentUnavailableView {
                 Label("No account selected", systemImage: "person.crop.circle")
             } description: {
-                Text("Add a GitHub or GitLab account with the + button below the list.")
+                Text("Add a \(ProviderRegistry.names(joinedBy: "or")) account with the + button below the list.")
             }
         }
     }
@@ -119,7 +119,7 @@ private struct AccountSidebarRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: account.kind.symbolName)
+            Image(systemName: account.traits.symbolName)
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
@@ -163,7 +163,7 @@ private struct AccountSidebarRow: View {
             Text("\(repoCount)")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
-                .help("\(account.kind.lexicon.repoNounPlural.capitalized) watched through this account")
+                .help("\(account.lexicon.repoNounPlural.capitalized) watched through this account")
         }
     }
 
@@ -171,7 +171,7 @@ private struct AccountSidebarRow: View {
         var parts = [account.displayName, account.subtitle].filter { !$0.isEmpty }
         if let error { parts.append(error) }
         else if account.login.isEmpty { parts.append("no verified token yet") }
-        else { parts.append("watching \(account.kind.lexicon.repoCount(repoCount))") }
+        else { parts.append("watching \(account.lexicon.repoCount(repoCount))") }
         return parts.joined(separator: ", ")
     }
 }
@@ -183,8 +183,8 @@ private struct AccountDetailForm: View {
     @EnvironmentObject private var state: AppState
 
     @State private var host: String = ""
-    /// Draft for the provider's scope field, when it has one. GitHub's resource
-    /// owner is the only one today.
+    /// Draft for the selected credential's scope field, when that kind of token
+    /// has one. GitHub's resource owner is the only one today.
     @State private var scopeName: String = ""
     /// What is in the Keychain right now, mirrored so the form can render the
     /// masked fingerprint without hitting the Keychain on every layout pass.
@@ -193,7 +193,10 @@ private struct AccountDetailForm: View {
     /// can be empty while a perfectly good token stays saved.
     @State private var draftToken: String = ""
     @State private var editingToken = false
-    @State private var style: TokenStyle = .fineGrained
+    /// Which kind of token step 2 is about to make. An id rather than the
+    /// credential itself: the list of kinds belongs to the provider, and this
+    /// form only remembers which one was picked.
+    @State private var credentialID = ""
     @State private var status: Status = .idle
     @State private var confirmingProvider: ProviderKind?
 
@@ -230,22 +233,34 @@ private struct AccountDetailForm: View {
         // reliably moves focus first. A pasted token must survive both.
         .onDisappear { commitToken() }
         .confirmationDialog(
-            "Change this account to \(confirmingProvider?.displayName ?? "")?",
+            "Change this account to \(confirmingProvider?.traits.displayName ?? "")?",
             isPresented: Binding(get: { confirmingProvider != nil }, set: { if !$0 { confirmingProvider = nil } }),
             presenting: confirmingProvider
         ) { kind in
             Button("Change Provider", role: .destructive) { apply(kind: kind) }
             Button("Cancel", role: .cancel) { confirmingProvider = nil }
         } message: { kind in
-            Text("\(account.displayName) watches \(lexicon.repoCount(watchedCount)) on \(account.host). Those entries mean nothing on \(kind.defaultHost), so they will be cleared.")
+            Text("\(account.displayName) watches \(lexicon.repoCount(watchedCount)) on \(account.host). Those entries mean nothing on \(kind.traits.defaultHost), so they will be cleared.")
         }
     }
 
     private var watchedCount: Int { state.repos(for: account).count }
 
+    /// This host's adapter. Every question below that a form might once have
+    /// answered with a `switch` on the provider is asked of it instead.
+    private var traits: any ProviderTraits { account.traits }
+
     /// This provider's own words. Every noun below that names a host concept
     /// comes from here rather than from a GitHub-shaped default.
-    private var lexicon: ProviderLexicon { account.kind.lexicon }
+    private var lexicon: ProviderLexicon { traits.lexicon }
+
+    /// The kind of token step 2 will make and step 3 expects. Falls back to the
+    /// recommended one, which is also what a provider with only one kind has.
+    private var credential: any Credential { traits.credential(id: credentialID) }
+
+    /// Where the token link should point. The field may be mid-edit or empty,
+    /// and a link to `https:///settings/...` is worse than a link to the default.
+    private var effectiveHost: String { host.isEmpty ? traits.defaultHost : host }
 
     // MARK: Step 1 — where
 
@@ -255,34 +270,31 @@ private struct AccountDetailForm: View {
             // which is both true without maintenance and the only thing that
             // actually differs between two accounts on the same host.
             Picker("Provider", selection: providerBinding) {
-                ForEach(ProviderKind.allCases) { kind in
-                    Text(kind.displayName).tag(kind)
+                ForEach(ProviderRegistry.all, id: \.kind) { option in
+                    Text(option.displayName).tag(option.kind)
                 }
             }
 
-            TextField("Host", text: $host, prompt: Text(account.kind.defaultHost))
+            TextField("Host", text: $host, prompt: Text(traits.defaultHost))
                 .focused($focusedField, equals: .host)
                 .onSubmit { commitHost() }
 
-            // The field appears only where the provider has the concept and the
-            // chosen token style uses it, which today means GitHub's
+            // The field appears only where the *selected credential* is bound to
+            // something narrower than the identity, which today means GitHub's
             // fine-grained tokens and nothing else. A classic token is bound to
             // no owner and a GitLab personal access token is bound to the
             // person, so an owner field on either would be inventing a setting
-            // the host does not have.
-            if let scopeFieldLabel = lexicon.scopeFieldLabel, style == .fineGrained {
+            // the host does not have — which is why the credential owns the
+            // field rather than the provider.
+            if let scopeField = credential.scopeField {
                 HStack(spacing: 6) {
-                    // The prompt names the *kind* of thing wanted, not an
-                    // example value. An earlier version said "your GitHub
-                    // login", which reads as an instruction and produced exactly
-                    // that on an account meant to point at an org.
-                    TextField(scopeFieldLabel, text: $scopeName,
-                              prompt: Text(lexicon.scopeFieldPrompt))
+                    TextField(scopeField.label, text: $scopeName,
+                              prompt: Text(scopeField.prompt))
                         .focused($focusedField, equals: .scope)
                         // Cosmetic as far as stored data goes — it only shapes
                         // the token link and the check — so it saves as typed.
                         .onChange(of: scopeName) { _, new in commitScope(new) }
-                    InfoButton(title: scopeFieldLabel, message: scopeFieldInfo)
+                    InfoButton(title: scopeField.label, message: scopeField.info)
                 }
             }
         } header: {
@@ -291,9 +303,9 @@ private struct AccountDetailForm: View {
             VStack(alignment: .leading, spacing: 4) {
                 // The two "who" values are what people confuse, so the sentence
                 // that relates them is the first thing under the fields.
-                Text(reachSummary)
+                Text(credential.reachSummary(for: account))
                 Text(account.isSaaS
-                     ? "\(account.kind.displayName)'s hosted service."
+                     ? "\(traits.displayName)'s hosted service."
                      : "Self-hosted or Enterprise instance.")
                 if watchedCount > 0 {
                     // The wipe is real and silent, so it gets said before it
@@ -310,17 +322,18 @@ private struct AccountDetailForm: View {
 
     private var tokenCreationSection: some View {
         Section {
-            if account.kind.supportsClassicTokens {
-                Picker("Token type", selection: $style) {
-                    ForEach(TokenStyle.allCases) { option in
-                        Text(option == .fineGrained ? "Fine-grained (recommended)" : "Classic (legacy)")
-                            .tag(option)
+            // Only where there is genuinely a choice. A host that issues one
+            // kind of token never shows a picker of one.
+            if traits.credentials.count > 1 {
+                Picker("Token type", selection: $credentialID) {
+                    ForEach(traits.credentials, id: \.id) { option in
+                        Text(option.pickerLabel).tag(option.id)
                     }
                 }
                 .pickerStyle(.radioGroup)
             }
 
-            Text(account.kind.tokenStyleNote(style))
+            Text(credential.note)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -333,12 +346,12 @@ private struct AccountDetailForm: View {
             }
         } header: {
             StepHeader(number: 2, title: "Create a token") {
-                if let guidance = account.tokenPageGuidance(style: style) {
+                if let guidance = credential.pageGuidance(for: account) {
                     InfoButton(title: "On the token page", message: guidance)
                 }
             }
         } footer: {
-            Text(account.kind.tokenPermissionNote(style))
+            Text(credential.permissionNote)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -351,7 +364,7 @@ private struct AccountDetailForm: View {
     private var tokenEntrySection: some View {
         Section {
             if editingToken || storedToken.isEmpty {
-                SecureField("Token", text: $draftToken, prompt: Text(tokenPrompt))
+                SecureField("Token", text: $draftToken, prompt: Text(credential.promptPlaceholder))
                     .font(.system(.body, design: .monospaced))
                     .focused($focusedField, equals: .token)
                     .onSubmit { verify() }
@@ -411,15 +424,14 @@ private struct AccountDetailForm: View {
         }
     }
 
-    /// The one thing on GitHub's page that cannot be fixed later: a token is
-    /// welded to the resource owner it was created under.
+    /// Whatever about this kind of token cannot be fixed after it is made.
     ///
     /// Loud while the account has no working token, because a token is about to
     /// be made and the mistake is permanent. Quiet once it verifies, where the
     /// same sentence is a note for the next token rather than a problem now.
     @ViewBuilder
     private var ownerCautionRow: some View {
-        if let caution = account.ownerCaution(style: style) {
+        if let caution = credential.caution(for: account) {
             let settled = !storedToken.isEmpty && !account.login.isEmpty
             Label(caution, systemImage: settled ? "info.circle" : "exclamationmark.triangle.fill")
                 .font(.caption)
@@ -433,11 +445,11 @@ private struct AccountDetailForm: View {
     /// works, making another token is no longer what this pane is for.
     @ViewBuilder
     private var createTokenButton: some View {
-        let url = account.kind.tokenURL(style: style, host: host, resourceOwner: scopeName)
+        let url = credential.creationURL(host: effectiveHost, scopeName: scopeName)
         let button = Button {
             if let url { NSWorkspace.shared.open(url) }
         } label: {
-            Label("Create Token on \(account.kind.displayName)…", systemImage: "arrow.up.forward.app")
+            Label("Create Token on \(traits.displayName)…", systemImage: "arrow.up.forward.app")
         }
         .disabled(url == nil)
 
@@ -445,13 +457,6 @@ private struct AccountDetailForm: View {
             button.buttonStyle(.borderedProminent)
         } else {
             button.buttonStyle(.bordered)
-        }
-    }
-
-    private var tokenPrompt: String {
-        switch account.kind {
-        case .github: return style == .classic ? "ghp_…" : "github_pat_…"
-        case .gitlab: return "glpat-…"
         }
     }
 
@@ -503,8 +508,9 @@ private struct AccountDetailForm: View {
         editingToken = storedToken.isEmpty
         // Default the choice in step 2 to whatever kind is already in place, so
         // "make me another one of these" is one click and the notes underneath
-        // describe the token the account actually holds.
-        style = storedToken.hasPrefix("ghp_") ? .classic : .fineGrained
+        // describe the token the account actually holds. The credential
+        // recognises its own token; nothing here knows what a prefix looks like.
+        credentialID = (traits.credential(forToken: storedToken) ?? traits.credentials[0]).id
         if !account.login.isEmpty { status = .ok(account.login) }
     }
 
@@ -530,17 +536,19 @@ private struct AccountDetailForm: View {
         updated.kind = kind
         // The old host belongs to the old provider; move to the new one's
         // default rather than leaving a host that can't work.
-        updated.host = kind.defaultHost
+        updated.host = kind.traits.defaultHost
         updated.login = ""
         // The old scope was a concept of the old provider. Whatever the new
-        // token turns out to reach, verify() will record it.
+        // token turns out to reach, verification will record it.
         updated.scope = .wholeIdentity
         state.update(updated)
-        host = kind.defaultHost
+        host = kind.traits.defaultHost
         scopeName = ""
         status = .idle
         confirmingProvider = nil
-        if !kind.supportsClassicTokens { style = .fineGrained }
+        // The old credential was the old host's. Start on the new host's
+        // recommended kind, which is also its only kind where it has one.
+        credentialID = kind.traits.credentials[0].id
     }
 
     private func commitHost() {
@@ -592,39 +600,6 @@ private struct AccountDetailForm: View {
             updated.scope = .resourceOwner(name: name, kind: kind)
         }
         state.update(updated)
-    }
-
-    /// What the scope field is for, in the provider's own words.
-    private var scopeFieldInfo: String {
-        switch account.kind {
-        case .github:
-            return "The user or organisation that owns the \(lexicon.repoNounPlural) you want to watch: your own login for your own, an organisation's name for theirs. It is not your login unless these are your own \(lexicon.repoNounPlural).\n\nOne fine-grained token reaches exactly one resource owner, so watching two owners means two accounts here."
-        case .gitlab:
-            return "GitLab personal access tokens are scoped to you, not to a namespace, so there is nothing to name here."
-        }
-    }
-
-    /// One line relating the account's two "who" values: the identity the token
-    /// signs in as, and whatever it is allowed to reach. Confusing those two is
-    /// the single most common way an account ends up watching nothing.
-    private var reachSummary: String {
-        let who = account.login.isEmpty ? "this token" : "@\(account.login)"
-        switch (account.kind, style) {
-        case (.github, .fineGrained):
-            guard let owner = account.resourceOwner else {
-                return "A fine-grained token is bound to one resource owner. Name it above, and the link and the check will both use it."
-            }
-            guard !account.login.isEmpty else {
-                return "This token will be bound to \(owner) and will reach nothing else."
-            }
-            return account.resourceOwnerSelection == .needed
-                ? "Signed in as \(who), reading \(owner)'s \(lexicon.repoNounPlural)."
-                : "Signed in as \(who), reading your own \(lexicon.repoNounPlural)."
-        case (.github, .classic):
-            return "A classic token is not scoped to an owner: it reaches every owner \(who) can see."
-        case (.gitlab, _):
-            return "A personal access token is scoped to the person: it reaches every \(lexicon.namespaceNoun) \(who) can see."
-        }
     }
 
     private func pasteToken() {

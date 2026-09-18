@@ -30,16 +30,74 @@ struct GitHubProvider: Provider {
 
     // MARK: - Provider
 
-    func verify() async throws -> String {
+    func verify() async throws -> Verification {
         let data: ViewerLogin = try await perform("query { viewer { login } }").data
-        return data.viewer.login
+        var verified = account
+        verified.login = data.viewer.login
+        verified.scope = await resolvedScope(for: verified)
+
+        // Public repos are visible to every token regardless of scope, so only a
+        // private one proves the token really reaches this owner — which means
+        // the check needs a listing, and the caller may as well keep it.
+        guard case .needed = OwnerSelection.of(verified),
+              let owner = verified.resourceOwner,
+              let repos = try? await repositories()
+        else {
+            return Verification(login: verified.login, scope: verified.scope)
+        }
+        let reachesOwner = repos.contains {
+            $0.isPrivate && $0.namespace.caseInsensitiveCompare(owner) == .orderedSame
+        }
+        return Verification(
+            login: verified.login,
+            scope: verified.scope,
+            warning: reachesOwner ? nil : Self.wrongOwnerWarning(login: verified.login, owner: owner),
+            repositories: repos
+        )
+    }
+
+    /// What the just-verified token actually reaches.
+    ///
+    /// The token itself is the evidence, not the form the user filled in: which
+    /// kind of credential it is decides whether it is bound to an owner at all,
+    /// and the credential knows its own prefix. A user who pastes a classic
+    /// token into an account that names an owner gets the truth recorded rather
+    /// than the intention, which is what stops the repo picker from filtering by
+    /// an owner the token was never scoped to.
+    private func resolvedScope(for account: Account) async -> TokenScope {
+        switch account.traits.binding(forToken: token, account: account) {
+        case .unchanged:
+            return account.scope
+        case .wholeIdentity:
+            return .wholeIdentity
+        case .resourceOwner(let name):
+            let kind = await ownerKind(of: name)
+                // Unreachable or refused: fall back to the one thing we can
+                // infer. A resource owner that isn't you is an organisation far
+                // more often than it is a second personal account.
+                ?? (name.caseInsensitiveCompare(account.login) == .orderedSame ? .user : .organisation)
+            return .resourceOwner(name: name, kind: kind)
+        }
+    }
+
+    /// Why a token scoped to somebody else's account might not reach them.
+    ///
+    /// This exists because of a specific, open GitHub bug: the token page's
+    /// `target_name` parameter sets the Resource owner dropdown's *appearance*
+    /// without setting the form, so a token can be created under the personal
+    /// account while looking correct throughout. A fine-grained token's resource
+    /// owner is fixed at creation, so the only cure is deletion — which makes
+    /// catching it at verify time, rather than at the first confusing empty repo
+    /// list, worth a request.
+    private static func wrongOwnerWarning(login: String, owner: String) -> String {
+        "Signed in as \(login), but this token can't see any private repository owned by \(owner). Its resource owner is probably your personal account, and that can't be changed after the token is created: delete it and make a new one with Resource owner set to \(owner) on the page itself."
     }
 
     /// GitHub types its owners in the schema, so one small query settles whether
     /// a name is a person or an organisation. `repositoryOwner` needs no
     /// permission beyond what any working token already has, and a refusal is
     /// answered with nil rather than a guess.
-    func ownerKind(of name: String) async -> OwnerKind? {
+    private func ownerKind(of name: String) async -> OwnerKind? {
         guard !name.isEmpty else { return nil }
         let query = "query($login: String!) { repositoryOwner(login: $login) { __typename } }"
         guard let response: Response<RepositoryOwnerType> = try? await perform(query, variables: ["login": name]),
