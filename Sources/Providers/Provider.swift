@@ -20,6 +20,18 @@ protocol Provider: Sendable {
     /// individually failed comes back with its `error` set rather than being
     /// omitted, so the UI can show which one is broken.
     func highlights(for repos: [WatchedRepo]) async throws -> [String: RepoHighlights]
+
+    /// Whether a name on this host belongs to a person or to an organisation.
+    /// Asked once at verify time so the UI can say "organisation khaplu" rather
+    /// than leaving the user to work out why their token signs in as someone
+    /// else. nil means the host could not or would not say.
+    func ownerKind(of name: String) async -> OwnerKind?
+}
+
+extension Provider {
+    /// Providers that cannot answer cheaply inherit "don't know", which callers
+    /// already have to handle for a refused or offline lookup.
+    func ownerKind(of name: String) async -> OwnerKind? { nil }
 }
 
 enum ProviderFactory {
@@ -83,11 +95,11 @@ enum ProviderSupport {
 
     /// Splits "group/subgroup/project" into namespace and project name. GitLab
     /// namespaces nest, so the split is at the *last* slash, not the first.
-    static func splitPath(_ path: String) -> (owner: String, name: String)? {
+    static func splitPath(_ path: String) -> (namespace: String, name: String)? {
         guard let slash = path.lastIndex(of: "/") else { return nil }
-        let owner = String(path[..<slash])
+        let namespace = String(path[..<slash])
         let name = String(path[path.index(after: slash)...])
-        guard !owner.isEmpty, !name.isEmpty else { return nil }
-        return (owner, name)
+        guard !namespace.isEmpty, !name.isEmpty else { return nil }
+        return (namespace, name)
     }
 }

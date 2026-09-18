@@ -56,6 +56,30 @@ three numbered steps: where the account points (provider, host, and on GitHub th
 resource owner), creating a token, then pasting it back. **Save & Verify**
 confirms the token and resolves your login.
 
+An account is titled by what its token reaches - `khaplu (organisation)`,
+`@bilal`, or just the host until a token says otherwise. There is no name field:
+Roost used to have one and seed it with the provider's name, which gave every
+account on a host the same title.
+
+Two names remain, and they are two different things:
+
+| Name | What it is | Set by |
+|---|---|---|
+| **login** / **username** | who the token signs in as | resolved by Verify, never typed |
+| **Resource owner** | what a fine-grained token is allowed to reach | you, and fixed into the token at creation |
+
+The line under step 1 states the relationship outright - *"Signed in as
+@bilal-bhatti, reading khaplu's repositories"* - because mixing those two up is
+the usual reason an account ends up watching nothing. Roost cannot know which
+GitHub account your browser is signed into, so the login is always discovered
+from the token rather than declared in the form.
+
+Each provider's own words are used throughout: GitHub accounts talk about owners,
+repositories, pull requests and checks; GitLab accounts talk about namespaces,
+projects, merge requests and pipelines. The **Resource owner** field is GitHub's
+concept, so it appears only for GitHub fine-grained tokens - a classic token is
+scoped to no owner, and a GitLab personal access token is scoped to you.
+
 The token is stored in your login Keychain, never on disk. Once saved it is shown
 as a fingerprint - `github_pat_••••4f9c`, plus its length - rather than as 93
 secure-field bullets. **Replace…** swaps it, **Remove** forgets it.
@@ -182,14 +206,22 @@ polling faster buys no freshness you would notice.
 | `Sources/Providers/GitHubProvider.swift` | GitHub.com + Enterprise, GraphQL. |
 | `Sources/Providers/GitLabProvider.swift` | gitlab.com + self-hosted, REST v4. |
 | `Sources/AppState.swift` | Accounts, watch list, highlights, poll timer. |
+| `Sources/Model/Account.swift` | One identity: host, login, and a `TokenScope` saying what its credential reaches. |
+| `Sources/Model/ProviderLexicon.swift` | Each provider's own nouns (owner/namespace, repository/project, PR/MR, checks/pipeline). |
 | `Sources/Core/Keychain.swift` | Tokens, one item per account. |
 | `Sources/Core/Store.swift` | Everything persisted to UserDefaults. |
 | `Sources/Views/DesignSystem.swift` | Semantic type, colour and row highlighting. |
 | `Sources/Views/` | The popover and the settings panes. |
 | `build-app.sh` | Compiles, signs & installs. |
 
-Adding a provider (Gitea, Bitbucket, …) is a case in `ProviderKind` plus one
-file conforming to `Provider`. Nothing above that seam knows the difference.
+Adding a provider (Gitea, Bitbucket, …) is a case in `ProviderKind`, a
+`ProviderLexicon` giving its vocabulary, and one file conforming to `Provider`.
+Nothing above that seam knows the difference.
+
+Account records saved by older builds (`username`, `owner`) and watch lists saved
+as `owner/name` decode into the current shape on read, so upgrading neither
+resets your accounts nor empties your watch list. A hand-typed `label` from an
+older build is dropped, since accounts are no longer named by hand.
 
 ## When something doesn't work
 

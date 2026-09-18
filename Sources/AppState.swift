@@ -98,7 +98,7 @@ final class AppState: ObservableObject {
     // MARK: - Accounts
 
     func addAccount(kind: ProviderKind) -> Account {
-        let account = Account(kind: kind, label: kind.displayName)
+        let account = Account(kind: kind)
         accounts.append(account)
         Store.accounts = accounts
         return account
@@ -153,7 +153,7 @@ final class AppState: ObservableObject {
     }
 
     struct VerifyOutcome: Sendable {
-        let username: String
+        let login: String
         /// The token works, but something about it looks wrong enough to say so.
         let warning: String?
     }
@@ -168,25 +168,44 @@ final class AppState: ObservableObject {
         }
         let provider = ProviderFactory.make(account: account, token: token, http: http)
         do {
-            let username = try await provider.verify()
+            let login = try await provider.verify()
             var updated = account
-            updated.username = username
-            // A blank owner means "not stated yet". Once the token's own user
-            // is known, that is the right answer for the common case of
-            // watching your own repositories — filling it in beats leaving a
-            // field mysteriously empty for the user to guess at.
-            if updated.owner.trimmingCharacters(in: .whitespaces).isEmpty {
-                updated.owner = username
-            }
+            updated.login = login
+            updated.scope = await resolvedScope(for: updated, token: token, using: provider)
             if let index = accounts.firstIndex(where: { $0.id == account.id }) {
                 accounts[index] = updated
                 Store.accounts = accounts
             }
             accountErrors[account.id] = nil
-            return .success(VerifyOutcome(username: username, warning: await ownerWarning(for: updated, using: provider)))
+            return .success(VerifyOutcome(login: login, warning: await ownerWarning(for: updated, using: provider)))
         } catch {
             return .failure(error)
         }
+    }
+
+    /// What the just-verified token actually reaches.
+    ///
+    /// The token itself is the evidence, not the form the user filled in: GitHub
+    /// stamps `github_pat_` on fine-grained tokens and `ghp_` on classic ones,
+    /// and only the first kind is bound to a resource owner. A user who pastes a
+    /// classic token into an account that names an owner gets the truth recorded
+    /// rather than the intention, which is what stops the repo picker from
+    /// filtering by an owner the token was never scoped to.
+    private func resolvedScope(for account: Account, token: String, using provider: Provider) async -> TokenScope {
+        guard account.kind == .github else { return account.scope }
+        if token.hasPrefix("ghp_") { return .wholeIdentity }
+
+        // Fine-grained, and no owner named yet: the common case is watching your
+        // own repositories, so the login is the right answer. Filling it in
+        // beats leaving a field mysteriously empty for the user to guess at.
+        let name = account.resourceOwner ?? account.login
+        guard !name.isEmpty else { return account.scope }
+        let kind = await provider.ownerKind(of: name)
+            // Unreachable or refused: fall back to the one thing we can infer.
+            // A resource owner that isn't you is an organisation far more often
+            // than it is a second personal account.
+            ?? (name.caseInsensitiveCompare(account.login) == .orderedSame ? .user : .organisation)
+        return .resourceOwner(name: name, kind: kind)
     }
 
     /// Checks that a token scoped to someone else's account can actually reach
@@ -200,8 +219,12 @@ final class AppState: ObservableObject {
     /// which makes catching it at verify time, rather than at the first
     /// confusing empty repo list, worth a request.
     private func ownerWarning(for account: Account, using provider: Provider) async -> String? {
-        guard account.ownerNeedsSelecting else { return nil }
-        let owner = account.owner.trimmingCharacters(in: .whitespaces)
+        // `.needed`, not "anything but notNeeded": this runs with a freshly
+        // resolved login in hand, so `.unknown` here would mean the verify call
+        // returned no login at all, and there is nothing to compare against.
+        guard account.resourceOwnerSelection == .needed,
+              let owner = account.resourceOwner
+        else { return nil }
 
         guard let repos = try? await provider.repositories() else { return nil }
         repositoryCache[account.id] = repos
@@ -210,11 +233,11 @@ final class AppState: ObservableObject {
         // Public repos are visible to every token regardless of scope, so only
         // a private one proves the token really reaches this owner.
         let reachesOwner = repos.contains {
-            $0.isPrivate && $0.owner.caseInsensitiveCompare(owner) == .orderedSame
+            $0.isPrivate && $0.namespace.caseInsensitiveCompare(owner) == .orderedSame
         }
         guard !reachesOwner else { return nil }
 
-        return "Signed in as \(account.username), but this token can't see any private repository owned by \(owner) — its resource owner is probably your personal account. That can't be changed after the token is created: delete it and make a new one with Resource owner set to \(owner) on the page itself."
+        return "Signed in as \(account.login), but this token can't see any private repository owned by \(owner). Its resource owner is probably your personal account, and that can't be changed after the token is created: delete it and make a new one with Resource owner set to \(owner) on the page itself."
     }
 
     // MARK: - Repository picking
@@ -255,6 +278,16 @@ final class AppState: ObservableObject {
 
     func unwatch(_ repo: WatchedRepo) {
         watched.removeAll { $0.id == repo.id }
+        Store.watched = watched
+        pruneHighlights()
+        startPolling()
+    }
+
+    /// Clears one account's whole watch list in a single write. Unticking forty
+    /// boxes one at a time would persist, prune and re-poll forty times.
+    func unwatchAll(in account: Account) {
+        guard watched.contains(where: { $0.accountID == account.id }) else { return }
+        watched.removeAll { $0.accountID == account.id }
         Store.watched = watched
         pruneHighlights()
         startPolling()
@@ -305,7 +338,7 @@ final class AppState: ObservableObject {
             // Verify, resolve the login here rather than silently reporting
             // zero reviews forever.
             var account = account
-            if account.username.isEmpty {
+            if account.login.isEmpty {
                 if case .failure(let error) = await verify(account) {
                     errors[account.id] = (error as? LocalizedError)?.errorDescription
                         ?? error.localizedDescription
@@ -390,6 +423,14 @@ final class AppState: ObservableObject {
     }
 
     private var settingsWindow: NSWindow?
+    /// True once the window has been given a position — either restored from a
+    /// previous session or centred by us. Stops a reopen from yanking a window
+    /// the user deliberately moved or resized.
+    private var settingsWindowPlaced = false
+
+    /// Key AppKit saves the settings window's frame under. Naming it here keeps
+    /// the string from being retyped at the two places that use it.
+    private static let settingsFrameName = "RoostSettingsWindow"
 
     enum SettingsTab: Hashable {
         case accounts
@@ -413,21 +454,30 @@ final class AppState: ObservableObject {
             let hosting = NSHostingController(rootView: SettingsView().environmentObject(self))
             let window = NSWindow(contentViewController: hosting)
             window.title = "Roost Settings"
-            window.styleMask = [.titled, .closable]
+            // Resizable: the repository picker is a list whose useful height is
+            // the user's, not ours.
+            window.styleMask = [.titled, .closable, .resizable]
             window.isReleasedWhenClosed = false
             // Size before placing: NSWindow(contentViewController:) starts at the
             // hosting view's fitting size, which SwiftUI hasn't measured yet.
             // Positioning first would centre the wrong rectangle and the window
             // would then grow from its top-left corner, landing off-centre.
             window.setContentSize(Metrics.settingsSize)
+            window.contentMinSize = Metrics.settingsMinSize
+            // A resizable window that forgets its size every launch is worse
+            // than a fixed one — you'd re-drag the same corner daily. Restore
+            // first, then register, so the restore isn't overwritten by the
+            // default frame we just set.
+            settingsWindowPlaced = window.setFrameUsingName(Self.settingsFrameName)
+            window.setFrameAutosaveName(Self.settingsFrameName)
             settingsWindow = window
         }
 
         guard let window = settingsWindow else { return }
-        // Place it only when it isn't already on screen, so reopening doesn't
-        // yank a window the user deliberately moved.
-        if !window.isVisible {
+        // Place it once, when there is nothing saved to place it by.
+        if !window.isVisible, !settingsWindowPlaced {
             window.setFrameOrigin(Self.settingsOrigin(for: window))
+            settingsWindowPlaced = true
         }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()

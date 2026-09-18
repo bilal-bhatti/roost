@@ -9,9 +9,9 @@ import SwiftUI
 struct RepoRow: View {
     let repo: WatchedRepo
     let highlights: RepoHighlights?
-    /// "PR" or "MR", from the owning account's provider, so GitLab users never
-    /// see GitHub's vocabulary.
-    let abbreviation: String
+    /// The owning account's provider vocabulary, so a GitLab row says MR, merge
+    /// request and pipeline where a GitHub row says PR, pull request and checks.
+    let lexicon: ProviderLexicon
     let action: () -> Void
 
     private var ci: CIStatus { highlights?.ci ?? .unknown }
@@ -42,7 +42,7 @@ struct RepoRow: View {
                     ReviewBadge(count: reviewCount)
                 }
                 if openCount > 0 {
-                    Text("\(openCount) \(abbreviation)")
+                    Text("\(openCount) \(lexicon.changeRequestAbbreviation)")
                         .font(.callout.monospacedDigit())
                         .rowText(.secondary)
                 }
@@ -64,14 +64,14 @@ struct RepoRow: View {
             return "\(Formatting.count(reviewCount, "review")) waiting on you"
         }
         if ci == .failing {
-            return "\(highlights?.defaultBranch ?? "Default branch") is failing"
+            return "\(lexicon.ciNoun.capitalized) failing on \(highlights?.defaultBranch ?? "the default branch")"
         }
         // Never let a failed lookup masquerade as "nothing waiting on you".
         if highlights?.reviewRequestsAvailable == false {
             return "Review count unavailable"
         }
         if openCount > 0 {
-            return Formatting.count(openCount, abbreviation == "MR" ? "merge request" : "pull request")
+            return Formatting.count(openCount, lexicon.changeRequestNoun)
         }
         return ci.label
     }
@@ -83,7 +83,7 @@ struct RepoRow: View {
             return parts.joined(separator: ", ")
         }
         if openCount > 0 {
-            parts.append(Formatting.count(openCount, abbreviation == "MR" ? "merge request" : "pull request"))
+            parts.append(Formatting.count(openCount, lexicon.changeRequestNoun))
         }
         if reviewCount > 0 {
             parts.append("\(Formatting.count(reviewCount, "review")) waiting on you")

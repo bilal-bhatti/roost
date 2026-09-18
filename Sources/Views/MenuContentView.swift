@@ -190,7 +190,7 @@ struct MenuContentView: View {
                 RepoRow(
                     repo: repo,
                     highlights: state.highlights(for: repo),
-                    abbreviation: account.kind.changeRequestAbbreviation
+                    lexicon: account.kind.lexicon
                 ) {
                     state.open(repo)
                 }
@@ -251,7 +251,7 @@ private struct SectionHeader: View {
         HStack(spacing: 4) {
             Text(title)
                 .font(.caption.weight(.semibold))
-            if detail != title {
+            if !detail.isEmpty, detail != title {
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.tertiary)

@@ -42,7 +42,7 @@ struct GitLabProvider: Provider {
             for project in projects {
                 guard let split = ProviderSupport.splitPath(project.path_with_namespace) else { continue }
                 out.append(RemoteRepo(
-                    owner: split.owner,
+                    namespace: split.namespace,
                     name: split.name,
                     isPrivate: project.visibility != "public",
                     isArchived: project.archived ?? false
@@ -137,11 +137,11 @@ struct GitLabProvider: Provider {
     }
 
     private func reviewRequestCounts() async throws -> [Int: Int] {
-        guard !account.username.isEmpty else { return [:] }
+        guard !account.login.isEmpty else { return [:] }
         let request = try makeRequest("/merge_requests", query: [
             .init(name: "scope", value: "all"),
             .init(name: "state", value: "opened"),
-            .init(name: "reviewer_username", value: account.username),
+            .init(name: "reviewer_username", value: account.login),
             .init(name: "per_page", value: "100"),
         ])
         let items: [MergeRequest] = try await http

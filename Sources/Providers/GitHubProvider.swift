@@ -35,6 +35,23 @@ struct GitHubProvider: Provider {
         return data.viewer.login
     }
 
+    /// GitHub types its owners in the schema, so one small query settles whether
+    /// a name is a person or an organisation. `repositoryOwner` needs no
+    /// permission beyond what any working token already has, and a refusal is
+    /// answered with nil rather than a guess.
+    func ownerKind(of name: String) async -> OwnerKind? {
+        guard !name.isEmpty else { return nil }
+        let query = "query($login: String!) { repositoryOwner(login: $login) { __typename } }"
+        guard let response: Response<RepositoryOwnerType> = try? await perform(query, variables: ["login": name]),
+              let typename = response.data.repositoryOwner?.__typename
+        else { return nil }
+        switch typename {
+        case "Organization": return .organisation
+        case "User":         return .user
+        default:             return nil
+        }
+    }
+
     /// Listing is the one call that goes over REST rather than GraphQL.
     ///
     /// GraphQL's `viewer.repositories` connection is only dependable for a
@@ -77,7 +94,7 @@ struct GitHubProvider: Provider {
 
             out.append(contentsOf: items.compactMap { item in
                 guard let login = item.owner?.login else { return nil }
-                return RemoteRepo(owner: login, name: item.name,
+                return RemoteRepo(namespace: login, name: item.name,
                                   isPrivate: item.isPrivate, isArchived: item.archived ?? false)
             })
             if items.count < 100 { break }
@@ -111,7 +128,7 @@ struct GitHubProvider: Provider {
 
             var variables: [String: Any] = [:]
             for (index, repo) in chunk.enumerated() {
-                variables["o\(index)"] = repo.owner
+                variables["o\(index)"] = repo.namespace
                 variables["n\(index)"] = repo.name
             }
 
@@ -170,7 +187,7 @@ struct GitHubProvider: Provider {
                 // The branch may be nil too (`defaultBranchRef` is refused
                 // without Contents: Read), so the fallback resolves it.
                 if rollupState == nil {
-                    ciFallback.append(CIFallback(fullName: repo.fullName, owner: repo.owner,
+                    ciFallback.append(CIFallback(fullName: repo.fullName, namespace: repo.namespace,
                                                  name: repo.name, branch: node.defaultBranchRef?.name))
                 }
                 out[repo.fullName] = highlights
@@ -230,7 +247,7 @@ struct GitHubProvider: Provider {
     /// Default branch from REST metadata, for when GraphQL wouldn't say.
     private func defaultBranch(_ entry: CIFallback) async -> String? {
         do {
-            let request = try makeRESTRequest("/repos/\(entry.owner)/\(entry.name)")
+            let request = try makeRESTRequest("/repos/\(entry.namespace)/\(entry.name)")
             let detail: RESTRepoDetail = try await http
                 .send(request, cacheKey: cacheKey(request))
                 .decode(RESTRepoDetail.self)
@@ -247,7 +264,7 @@ struct GitHubProvider: Provider {
     /// `Actions: Read`, which fine-grained tokens *can* be given.
     private func actionsStatus(_ entry: CIFallback, branch: String) async -> CIStatus {
         do {
-            let request = try makeRESTRequest("/repos/\(entry.owner)/\(entry.name)/actions/runs", query: [
+            let request = try makeRESTRequest("/repos/\(entry.namespace)/\(entry.name)/actions/runs", query: [
                 .init(name: "branch", value: branch),
                 .init(name: "per_page", value: "1"),
                 // Runs triggered by pull requests say nothing about whether the
@@ -272,7 +289,7 @@ struct GitHubProvider: Provider {
     private func commitStatus(_ entry: CIFallback, branch: String) async -> CIStatus {
         do {
             let ref = ProviderSupport.encodeSegment(branch)
-            let request = try makeRESTRequest("/repos/\(entry.owner)/\(entry.name)/commits/\(ref)/status")
+            let request = try makeRESTRequest("/repos/\(entry.namespace)/\(entry.name)/commits/\(ref)/status")
             let payload: CombinedStatus = try await http
                 .send(request, cacheKey: cacheKey(request))
                 .decode(CombinedStatus.self)
@@ -511,12 +528,20 @@ private struct ViewerLogin: Decodable {
     struct Viewer: Decodable { var login: String }
 }
 
+/// `repositoryOwner(login:)` is an interface, so `__typename` is what names the
+/// concrete kind. Optional because GitHub returns null for a name it cannot
+/// resolve rather than an error.
+private struct RepositoryOwnerType: Decodable {
+    var repositoryOwner: Owner?
+    struct Owner: Decodable { var __typename: String }
+}
+
 /// A repo whose check-run rollup was refused, queued for the Actions fallback.
 /// A struct rather than a tuple so it satisfies the Sendable requirement of the
 /// concurrency helper without relying on tuple conformance.
 private struct CIFallback: Sendable {
     let fullName: String
-    let owner: String
+    let namespace: String
     let name: String
     /// nil when GraphQL wouldn't name the default branch; resolved over REST.
     let branch: String?
